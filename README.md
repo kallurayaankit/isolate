@@ -9,33 +9,37 @@
 ```bash
 pip install -e .
 isolate audit tests/
+```
 
-The problem
+## The problem
 
 You have 200 tests. They all pass in CI. They all pass locally. Then someone runs one test on its own and it fails. Or reorders the file alphabetically and three tests break. Or enables parallel execution and the whole suite goes red.
 
 Your tests are coupled. They share state through a database row, a module-level dict, a file on disk, a mocked object that leaks. The coupling is invisible because CI always runs them in the same order.
 
 Every test suite has this problem. Most teams never see it because they never look.
-What it does
 
-isolate runs each test twice:
+## What it does
 
-    Once as part of the full suite (the normal way)
+`isolate` runs each test **twice**:
 
-    Once alone, in its own pytest process, with no other test having run before it
+1. Once as part of the full suite (the normal way)
+2. Once **alone**, in its own pytest process, with no other test having run before it
 
 Then it compares the two results. Four possible verdicts:
-Verdict	Meaning
-isolated	Passes alone and in the suite
-order_dependent	Passes in the suite, fails alone — depends on another test
-polluter	Passes alone, but the suite fails — probably leaking state
-broken	Fails both ways — a real bug in the test
 
-The order_dependent result is the headline. That's a test that's lying to you.
-The output
-text
+| Verdict | Meaning |
+|---|---|
+| `isolated` | Passes alone and in the suite |
+| `order_dependent` | Passes in the suite, **fails alone** — depends on another test |
+| `polluter` | Passes alone, but the suite fails — probably leaking state |
+| `broken` | Fails both ways — a real bug in the test |
 
+The `order_dependent` result is the headline. That's a test that's lying to you.
+
+## The output
+
+```
 $ isolate audit tests/
 
 Found 5 tests
@@ -57,11 +61,13 @@ Running each test alone...
 === Problems ===
   [order_dependent] examples/demo_tests/test_demo.py::test_03_needs_user
       passes in suite but FAILS alone - depends on other tests
+```
 
-The . marks tests that are fine. The X marks a test that only passes because test_02_creates_user ran first.
-Quickstart
-bash
+The `.` marks tests that are fine. The `X` marks a test that only passes because `test_02_creates_user` ran first.
 
+## Quickstart
+
+```bash
 # install
 python -m venv .venv
 .venv\Scripts\activate          # or source .venv/bin/activate
@@ -78,56 +84,71 @@ isolate audit tests --fail-on-problems
 
 # also write JSON
 isolate audit tests --json out/audit.json
+```
 
-Verified results
+## Verified results
 
-Two runs from real projects:
+Two runs from real projects.
 
-The demo suite (5 tests, one deliberately order-dependent):
-text
+**The demo suite** (5 tests, one deliberately order-dependent):
 
+```
 isolated:        4
 order-dependent: 1
+```
 
-isolate found the bug.
+`isolate` found the bug.
 
-A real 79-test suite (rely):
-text
+**A real 79-test suite** (`rely`):
 
+```
 isolated:        79
 order-dependent: 0
 polluter:        0
 broken:          0
+```
 
-isolate correctly reported nothing when there was nothing to report. That's the harder test.
-How it works
-text
+`isolate` correctly reported nothing when there was nothing to report. That's the harder test.
 
-┌─────────────────┐
-│  discover.py    │  pytest --collect-only → list of test IDs
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│  runner.py      │  pytest <id> -x    → did it pass alone?
-│                 │  pytest <dir>      → did the suite pass?
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│  audit.py       │  compare → assign verdict → build report
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│  cli.py         │  print + optionally exit(1)
-└─────────────────┘
+## Architecture
 
-No subprocess magic beyond pytest itself. No plugins. No LLM. Just: run the suite, run each test alone, compare.
-Installation note
+```mermaid
+flowchart TB
+    A[discover.py] -->|pytest --collect-only| B[list of test IDs]
+    B --> C[runner.py]
+    C -->|pytest suite once| D[suite result]
+    C -->|pytest each test alone| E[individual results]
+    D --> F[audit.py]
+    E --> F
+    F -->|compare| G{verdict}
+    G -->|pass / pass| H[isolated]
+    G -->|pass / fail| I[order_dependent]
+    G -->|fail / pass| J[polluter]
+    G -->|fail / fail| K[broken]
+    H --> L[cli.py]
+    I --> L
+    J --> L
+    K --> L
+    L -->|print + exit| M[terminal output]
+```
 
-isolate runs pytest in a subprocess. That subprocess uses whatever environment isolate was installed into. If you want to audit a project, isolate needs to share a venv with that project's dependencies — or you install isolate into the project's own venv.
+### Component responsibilities
+
+| Module | What it does |
+|---|---|
+| `discover.py` | Runs `pytest --collect-only`, parses the output into a list of test IDs |
+| `runner.py` | `run_one()` runs a single test in a subprocess, `run_suite()` runs the whole directory |
+| `audit.py` | Orchestrates discovery and both runs, compares results, assigns verdicts |
+| `models.py` | `Audit` and `Report` dataclasses, `Verdict` enum |
+| `cli.py` | `isolate audit <dir>` command, handles output and exit codes |
+
+## Installation note
+
+`isolate` runs pytest in a subprocess. That subprocess uses whatever environment `isolate` was installed into. If you want to audit a project, `isolate` needs to share a venv with that project's dependencies — or you install `isolate` into the project's own venv.
 
 Two ways that work:
-bash
 
+```bash
 # Option A: install the target into isolate's venv
 pip install -e /path/to/target
 
@@ -135,18 +156,18 @@ pip install -e /path/to/target
 cd /path/to/target
 pip install -e /path/to/isolate
 isolate audit tests
+```
 
-What this is not
+## What this is not
 
-    Not a flake detector. pulse finds tests that are nondeterministic across identical runs. isolate finds tests that are deterministic but coupled.
+- **Not a flake detector.** `pulse` finds tests that are nondeterministic across identical runs. `isolate` finds tests that are deterministic but coupled.
+- **Not a test selector.** It runs everything. Twice.
+- **Not fast on large suites.** 200 tests x 1 second each = 200 seconds. It's meant for periodic audits, not every commit.
 
-    Not a test selector. It runs everything. Twice.
-
-    Not fast on large suites. 200 tests × 1 second each = 200 seconds. It's meant for periodic audits, not every commit.
-
-Status
+## Status
 
 Early. Works on pytest suites. Roadmap: parallel isolation checks, shuffled-ordering mode (run the suite in 3 random orders, look for flips), shared-state tracer (parse test code for module-level writes and file I/O to guess the coupling).
-License
+
+## License
 
 MIT
